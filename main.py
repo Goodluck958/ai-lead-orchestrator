@@ -1,7 +1,8 @@
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from agent import OrchestratorAgent
+from agent import OrchestratorAgent, OpenAISynthesisService, MockResearchService
 
 app = FastAPI(
     title="Autonomous Multi-Agent Business Intelligence Engine",
@@ -9,7 +10,6 @@ app = FastAPI(
     description="Production API driving autonomous multi-agent lead research and workflow synthesis."
 )
 
-# Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,7 +18,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-agent_system = OrchestratorAgent()
+# Inject intermediate architecture: Mock Research + Real Synthesis Provider
+agent_system = OrchestratorAgent(
+    research_service=MockResearchService(),
+    synthesis_service=OpenAISynthesisService()
+)
 
 class ResearchRequest(BaseModel):
     industry: str
@@ -29,6 +33,7 @@ async def root():
     return {
         "status": "online",
         "system": "Multi-Agent Intelligence Engine",
+        "architecture_stage": "Phase 3: Hybrid Mock-Research / Real-Synthesis",
         "docs": "/docs"
     }
 
@@ -45,3 +50,4 @@ async def execute_agent(payload: ResearchRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+        
