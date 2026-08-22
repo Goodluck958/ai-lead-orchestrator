@@ -1,13 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import List
+
+from .models import Lead
 
 
 class BaseResearchService(ABC):
     """
     Contract for lead research providers.
 
-    Any research implementation—mock, Tavily, or another
-    provider—must satisfy this interface.
+    Every research implementation must return validated
+    LEADFORGE Lead objects.
     """
 
     @abstractmethod
@@ -15,58 +17,40 @@ class BaseResearchService(ABC):
         self,
         industry: str,
         query: str,
-    ) -> List[Dict[str, Any]]:
-        """Research potential leads."""
+    ) -> List[Lead]:
+        """Discover potential leads."""
         raise NotImplementedError
 
 
 class BaseEnrichmentService(ABC):
     """
     Contract for lead enrichment providers.
-
-    Implementations can enrich a lead with company, contact,
-    website, or other publicly available business information.
     """
 
     @abstractmethod
-    async def enrich(
-        self,
-        lead: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Enrich a single lead."""
+    async def enrich(self, lead: Lead) -> Lead:
+        """Enrich an existing lead."""
         raise NotImplementedError
 
 
 class BaseQualificationService(ABC):
     """
-    Contract for lead qualification.
-
-    Implementations determine how suitable a lead is for
-    the client's target criteria.
+    Contract for lead qualification providers.
     """
 
     @abstractmethod
-    async def qualify(
-        self,
-        lead: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Score and qualify a lead."""
+    async def qualify(self, lead: Lead) -> Lead:
+        """Score and qualify an existing lead."""
         raise NotImplementedError
 
 
 class BasePersonalizationService(ABC):
     """
-    Contract for AI-powered personalization.
-
-    Implementations generate a personalized outreach message
-    using the qualified lead's information.
+    Contract for personalization providers.
     """
 
     @abstractmethod
-    async def personalize(
-        self,
-        lead: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    async def personalize(self, lead: Lead) -> Lead:
         """Generate personalized outreach content."""
         raise NotImplementedError
 
@@ -74,16 +58,9 @@ class BasePersonalizationService(ABC):
 class BaseOutreachService(ABC):
     """
     Contract for outreach providers.
-
-    Implementations can send or queue approved messages through
-    an external communication provider.
     """
 
     @abstractmethod
-    async def send(
-        self,
-        lead: Dict[str, Any],
-        message: str,
-    ) -> Dict[str, Any]:
+    async def send(self, lead: Lead) -> Lead:
         """Send or queue an outreach message."""
         raise NotImplementedError
