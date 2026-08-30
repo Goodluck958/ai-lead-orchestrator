@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .agent import OrchestratorAgent
 from .models import LeadResearchRequest
+from .services.research_tavily import TavilyResearchService
 
 
 app = FastAPI(
@@ -42,25 +43,6 @@ from .contracts import (
     BaseResearchService,
 )
 from .models import Lead, LeadStatus
-
-
-class MockResearchService(BaseResearchService):
-    async def research(
-        self,
-        industry: str,
-        query: str,
-    ) -> List[Lead]:
-        return [
-            Lead(
-                id="lead-001",
-                company_name="Example Business",
-                contact_name="Demo Contact",
-                contact_email="demo@example.com",
-                website="https://example.com",
-                industry=industry,
-                location="Demo Location",
-            )
-        ]
 
 
 class MockEnrichmentService(BaseEnrichmentService):
@@ -117,7 +99,7 @@ class MockOutreachService(BaseOutreachService):
 # ---------------------------------------------------------
 
 agent_system = OrchestratorAgent(
-    research_service=MockResearchService(),
+    research_service=TavilyResearchService(),
     enrichment_service=MockEnrichmentService(),
     qualification_service=MockQualificationService(),
     personalization_service=MockPersonalizationService(),
