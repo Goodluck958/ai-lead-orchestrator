@@ -7,6 +7,7 @@ from .contracts import (
     BaseQualificationService,
     BaseResearchService,
 )
+from .exceptions import AuthenticationError, RetryableError
 from .models import Lead, LeadResearchRequest, LeadStatus, PipelineState
 
 QUALIFICATION_THRESHOLD = 60.0
@@ -39,21 +40,36 @@ class OrchestratorAgent:
         state: PipelineState,
     ) -> list[Lead]:
         """
-        Runs one pipeline stage per-lead. A single lead failure is
-        recorded and marks that lead FAILED, but does not abort
-        the batch.
+        Runs one pipeline stage per-lead.
+
+        - AuthenticationError propagates up and halts the whole batch
+          (a dead API key affects every lead, not just one).
+        - RetryableError (rate limits, timeouts) leaves the lead's
+          status untouched so a later retry pass can pick it up.
+        - Any other exception marks that single lead FAILED and the
+          batch continues.
         """
         results: list[Lead] = []
 
         for lead in leads:
             if lead.status == LeadStatus.FAILED:
-                # Already failed in an earlier stage — carry it through untouched.
                 results.append(lead)
                 continue
 
             try:
                 updated_lead = await operation(lead)
                 results.append(updated_lead)
+
+            except AuthenticationError:
+                raise
+
+            except RetryableError as exc:
+                state.errors.append(
+                    f"[{stage_name}] lead '{lead.id}' temporary failure "
+                    f"(will retry later): {exc}"
+                )
+                results.append(lead)
+
             except Exception as exc:
                 state.errors.append(
                     f"[{stage_name}] lead '{lead.id}' failed: {exc}"
@@ -118,7 +134,7 @@ class OrchestratorAgent:
                     and lead.qualification_score >= QUALIFICATION_THRESHOLD
                 ):
                     return await self.personalization_service.personalize(lead)
-                return lead  # not qualified — pass through unchanged
+                return lead
 
             state.leads = await self._run_stage(
                 state.leads, "personalization", _personalize_if_qualified, state
@@ -142,8 +158,8 @@ class OrchestratorAgent:
             state.completed = True
 
         except Exception as exc:
-            # This only catches batch-level failures now (e.g. research
-            # itself throwing) — per-lead failures never reach here.
+            # Catches batch-level failures — research itself throwing,
+            # or an AuthenticationError re-raised out of _run_stage.
             state.errors.append(
                 f"Pipeline failed during '{state.current_stage}': {exc}"
             )
