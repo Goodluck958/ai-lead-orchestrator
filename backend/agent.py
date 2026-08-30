@@ -7,27 +7,14 @@ from .contracts import (
     BaseQualificationService,
     BaseResearchService,
 )
-from .models import LeadResearchRequest, PipelineState
+from .models import Lead, LeadResearchRequest, LeadStatus, PipelineState
+
+QUALIFICATION_THRESHOLD = 60.0
 
 
 class OrchestratorAgent:
     """
     Coordinates the complete LEADFORGE lead pipeline.
-
-    The orchestrator controls workflow order but does not know
-    which external provider performs each operation.
-
-    Pipeline:
-
-        Research
-            ↓
-        Enrichment
-            ↓
-        Qualification
-            ↓
-        Personalization
-            ↓
-        Outreach
     """
 
     def __init__(
@@ -44,19 +31,45 @@ class OrchestratorAgent:
         self.personalization_service = personalization_service
         self.outreach_service = outreach_service
 
+    async def _run_stage(
+        self,
+        leads: list[Lead],
+        stage_name: str,
+        operation,
+        state: PipelineState,
+    ) -> list[Lead]:
+        """
+        Runs one pipeline stage per-lead. A single lead failure is
+        recorded and marks that lead FAILED, but does not abort
+        the batch.
+        """
+        results: list[Lead] = []
+
+        for lead in leads:
+            if lead.status == LeadStatus.FAILED:
+                # Already failed in an earlier stage — carry it through untouched.
+                results.append(lead)
+                continue
+
+            try:
+                updated_lead = await operation(lead)
+                results.append(updated_lead)
+            except Exception as exc:
+                state.errors.append(
+                    f"[{stage_name}] lead '{lead.id}' failed: {exc}"
+                )
+                results.append(
+                    lead.model_copy(update={"status": LeadStatus.FAILED})
+                )
+
+        return results
+
     async def run_pipeline(
         self,
         target_industry: str,
         query: str,
         max_leads: int = 10,
     ) -> Dict[str, Any]:
-        """
-        Execute the LEADFORGE pipeline.
-
-        The pipeline records failures in PipelineState instead of
-        silently losing the execution state.
-        """
-
         request = LeadResearchRequest(
             industry=target_industry,
             query=query,
@@ -67,110 +80,82 @@ class OrchestratorAgent:
 
         try:
             # --------------------------------------------------
-            # 1. RESEARCH
+            # 1. RESEARCH (batch-level — no per-lead concept yet)
             # --------------------------------------------------
-
             state.current_stage = "research"
 
             state.leads = await self.research_service.research(
                 industry=request.industry,
                 query=request.query,
             )
-
-            # Enforce the requested maximum.
             state.leads = state.leads[: request.max_leads]
 
             # --------------------------------------------------
             # 2. ENRICHMENT
             # --------------------------------------------------
-
             state.current_stage = "enrichment"
-
-            enriched_leads = []
-
-            for lead in state.leads:
-                enriched_lead = await self.enrichment_service.enrich(lead)
-                enriched_leads.append(enriched_lead)
-
-            state.leads = enriched_leads
+            state.leads = await self._run_stage(
+                state.leads, "enrichment", self.enrichment_service.enrich, state
+            )
 
             # --------------------------------------------------
             # 3. QUALIFICATION
             # --------------------------------------------------
-
             state.current_stage = "qualification"
-
-            qualified_leads = []
-
-            for lead in state.leads:
-                qualified_lead = await self.qualification_service.qualify(
-                    lead
-                )
-                qualified_leads.append(qualified_lead)
-
-            state.leads = qualified_leads
+            state.leads = await self._run_stage(
+                state.leads, "qualification", self.qualification_service.qualify, state
+            )
 
             # --------------------------------------------------
-            # 4. PERSONALIZATION
+            # 4. PERSONALIZATION — gated by qualification score
             # --------------------------------------------------
-
             state.current_stage = "personalization"
 
-            personalized_leads = []
+            async def _personalize_if_qualified(lead: Lead) -> Lead:
+                if (
+                    lead.status == LeadStatus.QUALIFIED
+                    and lead.qualification_score is not None
+                    and lead.qualification_score >= QUALIFICATION_THRESHOLD
+                ):
+                    return await self.personalization_service.personalize(lead)
+                return lead  # not qualified — pass through unchanged
 
-            for lead in state.leads:
-                personalized_lead = (
-                    await self.personalization_service.personalize(lead)
-                )
-                personalized_leads.append(personalized_lead)
-
-            state.leads = personalized_leads
+            state.leads = await self._run_stage(
+                state.leads, "personalization", _personalize_if_qualified, state
+            )
 
             # --------------------------------------------------
-            # 5. OUTREACH
+            # 5. OUTREACH — only leads that actually got a message
             # --------------------------------------------------
-
             state.current_stage = "outreach"
 
-            outreach_results = []
+            async def _send_if_personalized(lead: Lead) -> Lead:
+                if lead.status == LeadStatus.PERSONALIZED and lead.personalized_message:
+                    return await self.outreach_service.send(lead)
+                return lead
 
-            for lead in state.leads:
-                if not lead.personalized_message:
-                    outreach_results.append(lead)
-                    continue
-
-                outreach_lead = await self.outreach_service.send(lead)
-                outreach_results.append(outreach_lead)
-
-            state.leads = outreach_results
-
-            # --------------------------------------------------
-            # COMPLETE
-            # --------------------------------------------------
+            state.leads = await self._run_stage(
+                state.leads, "outreach", _send_if_personalized, state
+            )
 
             state.current_stage = "completed"
             state.completed = True
 
         except Exception as exc:
+            # This only catches batch-level failures now (e.g. research
+            # itself throwing) — per-lead failures never reach here.
             state.errors.append(
                 f"Pipeline failed during '{state.current_stage}': {exc}"
             )
-
             state.completed = False
 
         return {
-            "status": (
-                "completed"
-                if state.completed
-                else "failed"
-            ),
+            "status": "completed" if state.completed else "failed",
             "industry": request.industry,
             "query": request.query,
             "current_stage": state.current_stage,
             "leads_processed": len(state.leads),
-            "leads": [
-                lead.model_dump(mode="json")
-                for lead in state.leads
-            ],
+            "leads_failed": sum(1 for l in state.leads if l.status == LeadStatus.FAILED),
+            "leads": [lead.model_dump(mode="json") for lead in state.leads],
             "errors": state.errors,
         }
